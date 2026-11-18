@@ -34,6 +34,10 @@ passo() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 erro() { printf '\n\033[1;31mERRO: %s\033[0m\n' "$*"; exit 1; }
 trap 'erro "algo falhou na linha $LINENO. Veja o log em $LOG"' ERR
 
+# o console da HostGator mostra as mensagens do kernel por cima de tudo; silencia
+dmesg -n 1 2>/dev/null || true
+echo 'kernel.printk = 3 4 1 3' > /etc/sysctl.d/99-console-silencioso.conf
+
 # -----------------------------------------------------------------------------
 passo "Conferindo a VPS"
 [ "$(id -u)" -eq 0 ] || erro "rode como root."
@@ -110,11 +114,21 @@ fi
 # -----------------------------------------------------------------------------
 passo "Evolution API"
 mkdir -p "$EVO_DIR"
-if [ -f "$EVO_DIR/.env" ] && grep -q '^AUTHENTICATION_API_KEY=' "$EVO_DIR/.env"; then
-  API_KEY=$(sed -n 's/^AUTHENTICATION_API_KEY=//p' "$EVO_DIR/.env")
+# A chave é digitada à mão (o console não deixa copiar): 4 blocos de 4,
+# sem letras que confundem (0/o, 1/l/i). ~79 bits de aleatoriedade.
+gerar_chave() {
+  local abc='abcdefghjkmnpqrstuvwxyz23456789' k='' i
+  for i in $(seq 1 16); do
+    k+=${abc:$(( $(od -An -N2 -tu2 /dev/urandom) % ${#abc} )):1}
+    [ $((i % 4)) -eq 0 ] && [ "$i" -lt 16 ] && k+='-'
+  done
+  echo "$k"
+}
+API_KEY=$(sed -n 's/^AUTHENTICATION_API_KEY=//p' "$EVO_DIR/.env" 2>/dev/null || true)
+if [[ "$API_KEY" =~ ^[a-z2-9]{4}-[a-z2-9]{4}-[a-z2-9]{4}-[a-z2-9]{4}$ ]]; then
   echo "reaproveitando a chave que já existia"
 else
-  API_KEY=$(openssl rand -hex 16 2>/dev/null || head -c16 /dev/urandom | od -An -tx1 | tr -d ' \n')
+  API_KEY=$(gerar_chave)
 fi
 
 cat > "$EVO_DIR/.env" <<EOF
@@ -252,35 +266,29 @@ echo
 
 # -----------------------------------------------------------------------------
 trap - ERR
-cat <<EOF
-
-$(verde "================================================================")
-$(verde "  PRONTO! Deixe esta tela aberta, você vai usar estes dados.")
-$(verde "================================================================")
-
-  n8n (abra no navegador):
-      ${N8N_URL}
-
-  Painel da Evolution (abra no navegador):
-      ${EVO_URL}/manager
-
-  Endereço da Evolution (para a credencial no n8n):
-      ${EVO_URL}
-
-  Chave da Evolution (API Key):
-      ${API_KEY}
-
-$(verde "================================================================")
-  Para ver estes dados de novo:  cat ${EVO_DIR}/LEIA-ME.txt
-EOF
 
 cat > "$EVO_DIR/LEIA-ME.txt" <<EOF
-n8n:                 ${N8N_URL}
-Painel Evolution:    ${EVO_URL}/manager
-Endereço Evolution:  ${EVO_URL}
-Chave (API Key):     ${API_KEY}
+
+$(verde "========================================================")
+$(verde "  PRONTO! Anote estes dados, voce vai usar daqui a pouco")
+$(verde "========================================================")
+
+  n8n ............. ${N8N_URL}
+  Evolution ....... ${EVO_URL}
+  Painel .......... ${EVO_URL}/manager
+
+  Chave ........... ${API_KEY}
+
+$(verde "========================================================")
+  Para ver de novo, digite:  dados
+
 EOF
 chmod 600 "$EVO_DIR/LEIA-ME.txt"
+printf '#!/bin/sh\ncat %s\n' "$EVO_DIR/LEIA-ME.txt" > /usr/local/bin/dados
+chmod 700 /usr/local/bin/dados
+
+clear
+cat "$EVO_DIR/LEIA-ME.txt"
 
 exit 0
 }
