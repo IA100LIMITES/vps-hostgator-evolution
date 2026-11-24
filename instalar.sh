@@ -8,7 +8,8 @@
 #    3. sobe a Evolution API v2 na mesma rede Docker do n8n (Redis índice 1);
 #    4. corrige a URL de webhook do n8n (o domínio da imagem não existe no DNS);
 #    5. instala o nó n8n-nodes-evolution-api no n8n (main e worker);
-#    6. mostra os endereços e a chave.
+#    6. cria o banco e o usuário "agente" (credencial Postgres do n8n);
+#    7. mostra os endereços, a chave e os dados do Postgres.
 #
 #  Pode rodar de novo quantas vezes quiser: ele reaproveita a chave e o banco.
 #  Uso:  curl -fsSL <endereço>/instalar.sh | bash
@@ -223,6 +224,49 @@ echo
 verde "Evolution no ar"
 
 # -----------------------------------------------------------------------------
+passo "Banco de dados do agente (credencial Postgres do n8n)"
+# Banco e usuário próprios, com senha fácil de digitar: o console não deixa
+# copiar e a senha do Postgres da imagem é longa. Nada aqui interrompe a
+# instalação: se algo falhar, mostra os dados do Postgres da própria imagem.
+sql() { docker exec postgres psql -U "$DB_USER" -d postgres -v ON_ERROR_STOP=1 -Atc "$1"; }
+PG_DB="agente"
+PG_USER="agente"
+PG_PASS=$(cat "$EVO_DIR/.senha-agente" 2>/dev/null || true)
+[[ "$PG_PASS" =~ ^[a-z2-9]{4}-[a-z2-9]{4}-[a-z2-9]{4}-[a-z2-9]{4}$ ]] || PG_PASS=$(gerar_chave)
+
+if sql "select 1 from pg_roles where rolname='${PG_USER}'" 2>/dev/null | grep -q 1; then
+  sql "alter role ${PG_USER} login password '${PG_PASS}'" >/dev/null 2>&1 || PG_USER=""
+else
+  sql "create role ${PG_USER} login password '${PG_PASS}'" >/dev/null 2>&1 || PG_USER=""
+fi
+if [ -n "$PG_USER" ]; then
+  printf '%s\n' "$PG_PASS" > "$EVO_DIR/.senha-agente"
+  chmod 600 "$EVO_DIR/.senha-agente"
+else
+  amarelo "não deu para criar o usuário 'agente'; usando o usuário da imagem"
+  PG_USER="$DB_USER"; PG_PASS="$DB_PASS"
+fi
+
+if sql "select 1 from pg_database where datname='${PG_DB}'" 2>/dev/null | grep -q 1; then
+  echo "banco '${PG_DB}' já existe"
+elif docker exec postgres createdb -U "$DB_USER" "$PG_DB" >/dev/null 2>&1; then
+  verde "banco '${PG_DB}' criado"
+else
+  amarelo "não deu para criar o banco 'agente'; usando o banco do n8n"
+  PG_DB=$(env_de n8n-main DB_POSTGRESDB_DATABASE)
+  PG_USER="$DB_USER"; PG_PASS="$DB_PASS"
+fi
+if [ "$PG_USER" = "agente" ]; then
+  sql "alter database ${PG_DB} owner to ${PG_USER}" >/dev/null 2>&1 || true
+fi
+# confere pela rede (por 127.0.0.1 o Postgres não pede senha e o teste não valeria)
+if docker exec -e PGPASSWORD="$PG_PASS" postgres psql -h postgres -U "$PG_USER" -d "$PG_DB" -Atc 'select 1' >/dev/null 2>&1; then
+  verde "usuário e senha do banco conferidos"
+else
+  amarelo "não consegui conferir o acesso ao banco; teste a credencial no n8n"
+fi
+
+# -----------------------------------------------------------------------------
 passo "n8n: URL de webhook e nó da Evolution"
 OVERRIDE="$N8N_DIR/docker-compose.override.yml"
 if [ "$N8N_URL" = "http://${IP}/" ]; then
@@ -278,6 +322,13 @@ $(verde "========================================================")
   Painel .......... ${EVO_URL}/manager
 
   Chave ........... ${API_KEY}
+
+  Postgres (credencial do agente robusto no n8n)
+  Host ............ postgres
+  Banco ........... ${PG_DB}
+  Usuario ......... ${PG_USER}
+  Senha ........... ${PG_PASS}
+  Porta ........... 5432   (SSL desligado)
 
 $(verde "========================================================")
   Para ver de novo, digite:  dados

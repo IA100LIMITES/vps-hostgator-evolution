@@ -7,5 +7,5 @@ curl -fLo v vps.iasemlimites.com
 bash v
 ```
 
-No fim aparecem o endereço do n8n, o painel da Evolution e a chave da API.
+No fim aparecem o endereço do n8n, o painel da Evolution, a chave da API e os dados do Postgres para a credencial do n8n.
 Para ver esses dados de novo: `dados`
