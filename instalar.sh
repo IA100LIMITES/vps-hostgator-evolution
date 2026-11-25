@@ -9,7 +9,8 @@
 #    4. corrige a URL de webhook do n8n (o domínio da imagem não existe no DNS);
 #    5. instala o nó n8n-nodes-evolution-api no n8n (main e worker);
 #    6. cria o banco e o usuário "agente" (credencial Postgres do n8n);
-#    7. mostra os endereços, a chave e os dados do Postgres.
+#    7. cria as credenciais da Evolution e do Postgres no n8n;
+#    8. mostra os endereços, a chave e os dados do Postgres.
 #
 #  Pode rodar de novo quantas vezes quiser: ele reaproveita a chave e o banco.
 #  Uso:  curl -fsSL <endereço>/instalar.sh | bash
@@ -309,7 +310,48 @@ echo
 [ "$ok" = 1 ] || amarelo "o n8n ainda está subindo; espere 1 minuto antes de abrir."
 
 # -----------------------------------------------------------------------------
+passo "n8n: credenciais da Evolution e do Postgres"
+# Deixa as duas credenciais prontas no n8n, para o aluno só selecionar no
+# template. Funciona antes de existir conta: elas ficam com o dono da
+# instância e aparecem quando ele cria o acesso. Nada aqui interrompe a
+# instalação; se falhar, o aluno cria à mão com os dados da tela final.
+N8N_DB=$(env_de n8n-main DB_POSTGRESDB_DATABASE)
+ja_tem() {  # já existe credencial desse tipo feita à mão (com outro id)?
+  docker exec postgres psql -U "$DB_USER" -d "$N8N_DB" -Atc \
+    "select 1 from credentials_entity where type='$1' and id<>'$2' limit 1" 2>/dev/null | grep -q 1
+}
+CRED_JSON=""
+CRED_NOMES=""
+if ! ja_tem evolutionApi evolutionAgente01; then
+  CRED_JSON="{\"id\":\"evolutionAgente01\",\"name\":\"Evolution account\",\"type\":\"evolutionApi\",\"data\":{\"server-url\":\"${EVO_URL}\",\"apikey\":\"${API_KEY}\"}}"
+  CRED_NOMES="Evolution account"
+fi
+if ! ja_tem postgres postgresAgente01; then
+  [ -n "$CRED_JSON" ] && CRED_JSON+=","
+  CRED_JSON+="{\"id\":\"postgresAgente01\",\"name\":\"Postgres account\",\"type\":\"postgres\",\"data\":{\"host\":\"postgres\",\"database\":\"${PG_DB}\",\"user\":\"${PG_USER}\",\"password\":\"${PG_PASS}\",\"port\":5432,\"ssl\":\"disable\"}}"
+  [ -n "$CRED_NOMES" ] && CRED_NOMES+=" e "
+  CRED_NOMES+="Postgres account"
+fi
+CRED_OK=0
+if [ -z "$CRED_JSON" ]; then
+  echo "o n8n já tem credenciais da Evolution e do Postgres, nada a fazer"
+elif printf '[%s]\n' "$CRED_JSON" | docker exec -i -u node n8n-main sh -c 'umask 077; cat > /tmp/credenciais.json' 2>/dev/null \
+  && docker exec -u node n8n-main n8n import:credentials --input=/tmp/credenciais.json 2>&1 | grep -q "Successfully imported"; then
+  CRED_OK=1
+  verde "credenciais criadas no n8n: ${CRED_NOMES}"
+else
+  amarelo "não deu para criar as credenciais no n8n; crie à mão com os dados da tela final"
+fi
+docker exec -u node n8n-main rm -f /tmp/credenciais.json >/dev/null 2>&1 || true
+
+# -----------------------------------------------------------------------------
 trap - ERR
+
+AVISO_CRED=""
+[ "$CRED_OK" = 1 ] && AVISO_CRED="
+  No n8n ja estao prontas as credenciais: ${CRED_NOMES}.
+  No template, e so abrir o no e selecionar.
+"
 
 cat > "$EVO_DIR/LEIA-ME.txt" <<EOF
 
@@ -329,7 +371,7 @@ $(verde "========================================================")
   Usuario ......... ${PG_USER}
   Senha ........... ${PG_PASS}
   Porta ........... 5432   (SSL desligado)
-
+${AVISO_CRED}
 $(verde "========================================================")
   Para ver de novo, digite:  dados
 
@@ -338,7 +380,7 @@ chmod 600 "$EVO_DIR/LEIA-ME.txt"
 printf '#!/bin/sh\ncat %s\n' "$EVO_DIR/LEIA-ME.txt" > /usr/local/bin/dados
 chmod 700 /usr/local/bin/dados
 
-clear
+clear 2>/dev/null || true
 cat "$EVO_DIR/LEIA-ME.txt"
 
 exit 0
